@@ -7,25 +7,34 @@ import re
 
 # 1. KONFIGURASI HALAMAN MASTER
 st.set_page_config(
-    page_title="Den Abi Master Generator V9", 
+    page_title="Den Abi Master Generator V10", 
     page_icon="🚀", 
     layout="centered"
 )
 
-# 2. TAMPILAN PREMIUM (UI/UX MODERN)
+# 2. TAMPILAN PREMIUM & HIDE GITHUB/SHARE MENU
 st.markdown("""
     <style>
+    /* Sembunyikan Header Streamlit (GitHub, Share, Menu) */
+    header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stDeployButton {display:none;}
+    
     .stApp {
         background: linear-gradient(135deg, #0d0d0d, #1a1a2e, #16213e);
-        color: #e0e0e0;
+        color: #ffffff;
     }
-    .stTextInput>div>div>input {
-        background-color: #ffffff !important;
-        color: #121212 !important;
-        border-radius: 12px !important;
-        font-weight: 600;
-        border: 2px solid #5c49f5 !important;
+    
+    /* Perbaikan Font Hitam Jadi Putih di Input Box */
+    input {
+        background-color: #252525 !important;
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        border-radius: 10px !important;
+        border: 1px solid #5c49f5 !important;
     }
+    
     .stButton>button {
         width: 100%;
         border-radius: 12px;
@@ -36,10 +45,7 @@ st.markdown("""
         border: none;
         box-shadow: 0px 4px 20px rgba(92, 73, 245, 0.4);
     }
-    .stButton>button:hover {
-        background: linear-gradient(90deg, #8e2de2, #5c49f5);
-        transform: scale(1.02);
-    }
+    
     .download-card {
         padding: 20px;
         background: rgba(255, 255, 255, 0.05);
@@ -51,8 +57,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown("<h1 style='text-align: center; color: #5c49f5;'>🚀 DEN ABI MASTER GENERATOR V9</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; opacity: 0.8;'>Solusi Grab Konten Massal untuk Blogger & WordPress Tanpa Gagal.</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #5c49f5;'>🚀 DEN ABI MASTER GENERATOR V10</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; opacity: 0.8;'>Mode Premium: Tanpa Menu GitHub & Support Grab Massal.</p>", unsafe_allow_html=True)
 
 # 3. AREA KONFIGURASI
 with st.container():
@@ -65,59 +71,66 @@ with st.container():
         grab_mode = st.selectbox("Mode Generate:", ["Semua Isi File", "Hanya Konten Teks", "Hanya Video"])
     with c2:
         limit_post = st.number_input("Jumlah Postingan (Max 50):", 1, 50, 10)
-        st.write("") # Spacer
+        st.write("") 
         st.write(f"📌 **Format:** {output_format}")
 
-# 4. LOGIKA PENGAMBILAN DATA
+# 4. LOGIKA PENGAMBILAN DATA (DENGAN HEADER KUAT)
 if 'antrean' not in st.session_state:
     st.session_state.antrean = []
 
 def get_feed_links(url):
     links = []
-    # Deteksi RSS Feed
     base = url.rstrip('/')
-    f_urls = [f"{base}/feeds/posts/default?alt=rss", f"{base}/feed/", f"{base}/rss.xml"]
+    # Daftar kemungkinan Feed URL agar tidak gagal
+    f_urls = [
+        f"{base}/feeds/posts/default?alt=rss&max-results={limit_post}", 
+        f"{base}/feed/", 
+        f"{base}/rss.xml",
+        f"{base}/?feed=rss2"
+    ]
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
+    
     for f in f_urls:
         try:
-            r = requests.get(f, timeout=7)
+            r = requests.get(f, headers=headers, timeout=10)
             if r.status_code == 200:
                 s = BeautifulSoup(r.content, 'xml')
                 items = s.find_all('item') or s.find_all('entry')
                 for i in items[:limit_post]:
-                    lnk = i.find('link').text if i.find('link') else i.find('link')['href']
-                    links.append(lnk)
+                    # Ambil link dengan berbagai tag (Blogger vs WP)
+                    lnk = i.find('link').text if i.find('link') and not i.find('link').has_attr('href') else (i.find('link')['href'] if i.find('link') else None)
+                    if not lnk and i.find('guid'): lnk = i.find('guid').text
+                    if lnk: links.append(lnk)
                 if links: break
         except: continue
     return list(set(links))
 
 def grab_core(url, mode):
-    h = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
     try:
-        r = requests.get(url, headers=h, timeout=10)
+        r = requests.get(url, headers=headers, timeout=10)
         s = BeautifulSoup(r.text, 'html.parser')
         t = s.find('h1').text.strip() if s.find('h1') else (s.title.string if s.title else "No Title")
         
         final_c = ""
-        # 1. Grab Gambar (Untuk Mode Semua)
         if mode == "Semua Isi File":
             og_img = s.find("meta", property="og:image")
             if og_img: final_c += f'<img src="{og_img["content"]}" style="width:100%; border-radius:10px;"/><br/>'
 
-        # 2. Grab Konten Teks
         if mode in ["Semua Isi File", "Hanya Konten Teks"]:
-            body = s.find(class_=re.compile(r'post-body|entry-content|article-post'))
+            body = s.find(class_=re.compile(r'post-body|entry-content|article-post|article-content'))
             if body: final_c += str(body)
 
-        # 3. Grab Video (IFRAME)
         if mode in ["Semua Isi File", "Hanya Video"]:
             for f in s.find_all('iframe'):
-                if 'embed' in f.get('src', ''):
+                if any(x in f.get('src', '').lower() for x in ['embed', 'video', 'youtube', 'bebas']):
                     final_c += str(f)
                     
         return t, final_c
     except: return None, None
 
-# 5. FUNGSI PEMBUAT XML (FIXED VERSION)
+# 5. FUNGSI PEMBUAT XML (CLEAN)
 def build_blogger(items):
     e = ""
     for i in items:
@@ -149,7 +162,7 @@ if st.button("🔥 GENERATE SEKARANG"):
                     p_bar.progress((idx + 1) / len(all_links))
                 st.success(f"Berhasil! {len(st.session_state.antrean)} postingan siap diunduh.")
             else:
-                st.error("Gagal menemukan daftar postingan. Pastikan link benar.")
+                st.error("Gagal mendeteksi postingan. Situs ini mungkin menggunakan keamanan tingkat tinggi.")
     else:
         st.warning("Silakan masukkan URL target.")
 
@@ -157,13 +170,12 @@ if st.button("🔥 GENERATE SEKARANG"):
 if st.session_state.antrean:
     st.markdown("<div class='download-card'>", unsafe_allow_html=True)
     xml_final = build_blogger(st.session_state.antrean) if output_format == "Blogger (Atom)" else build_wordpress(st.session_state.antrean)
-    f_ext = "xml"
     b64 = base64.b64encode(xml_final.encode()).decode()
     st.markdown(f'<h3>📦 {len(st.session_state.antrean)} File Siap Diunduh</h3>', unsafe_allow_html=True)
-    st.markdown(f'<a href="data:file/xml;base64,{b64}" download="DenAbi_{output_format}_{datetime.now().strftime("%H%M%S")}.{f_ext}" style="text-decoration:none;"><button style="width:100%; background:#fbc02d; color:black; border:none; padding:15px; border-radius:10px; font-weight:bold; cursor:pointer;">📥 DOWNLOAD SEKARANG</button></a>', unsafe_allow_html=True)
+    st.markdown(f'<a href="data:file/xml;base64,{b64}" download="DenAbi_Result.xml" style="text-decoration:none;"><button style="width:100%; background:#fbc02d; color:black; border:none; padding:15px; border-radius:10px; font-weight:bold; cursor:pointer;">📥 DOWNLOAD SEKARANG</button></a>', unsafe_allow_html=True)
     if st.button("🔄 RESET"):
         st.session_state.antrean = []
         st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown("<br><p style='text-align:center; font-size:12px; opacity:0.5;'>Den Abi Project © 2026 | Optimized for Prostream & Goostream Network</p>", unsafe_allow_html=True)
+st.markdown("<br><p style='text-align:center; font-size:12px; opacity:0.5;'>Den Abi Master Project © 2026 | No GitHub Menu Version</p>", unsafe_allow_html=True)

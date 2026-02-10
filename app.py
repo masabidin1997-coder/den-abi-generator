@@ -102,13 +102,41 @@ def get_atom_links(url, limit):
 # --- FUNGSI XML GENERATOR ---
 def generate_xml_output(items, format_type):
     now_iso = datetime.now().isoformat() + "Z"
+    
     if format_type == "Blogger (Atom)":
         entries = ""
         for i in items:
+            # Escape XML agar konten HTML tidak rusak
             c_safe = i['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            entries += f"<entry><category scheme='http://www.blogger.com/atom/ns#' term='AGC-DenAbi'/><title type='text'>{i['title']}</title><content type='html'>{c_safe}</content><published>{now_iso}</published><control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control><author><name>Den Abi</name></author></entry>"
-        return f"<?xml version='1.0' encoding='UTF-8'?><feed xmlns='http://www.w3.org/2005/Atom'>{entries}</feed>"
-    else:
+            # Membuat ID Unik agar Blogger mengenali ini sebagai postingan baru
+            post_id = f"tag:blogger.com,1999:blog-denabi.{int(datetime.now().timestamp())}"
+            
+            entries += f"""
+    <entry>
+        <id>{post_id}</id>
+        <published>{now_iso}</published>
+        <updated>{now_iso}</updated>
+        <category scheme="http://www.blogger.com/atom/ns#" term="AGC-DenAbi"/>
+        <title type='text'>{i['title']}</title>
+        <content type='html'>{c_safe}</content>
+        <link rel='edit' type='application/atom+xml' href='#'/>
+        <link rel='self' type='application/atom+xml' href='#'/>
+        <link rel='alternate' type='text/html' href='http://www.prostream.my.id/'/>
+        <author><name>Den Abi</name></author>
+        <control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control>
+    </entry>"""
+        
+        # Header XML Blogger harus Lengkap
+        return f"""<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns='http://www.w3.org/2005/Atom' xmlns:blogger='http://schemas.google.com/blogger/2008' xmlns:thr='http://purl.org/syndication/thread/1.0'>
+<id>tag:blogger.com,1999:blog-denabi.archive</id>
+<updated>{now_iso}</updated>
+<title type='text'>Den Abi Master Export</title>
+<generator version='7.00' uri='http://www.blogger.com'>Blogger</generator>
+{entries}
+</feed>"""
+    
+    else: # WordPress Tetap
         entries = ""
         for i in items:
             entries += f"<item><title>{i['title']}</title><pubDate>{now_iso}</pubDate><content:encoded><![CDATA[{i['content']}]]></content:encoded><wp:status>publish</wp:status></item>"
@@ -152,3 +180,4 @@ if st.session_state.antrean:
         st.rerun()
 
 st.caption("Developed by Den Abi Project © 2026 | Atom XML Path V11")
+

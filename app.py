@@ -1,490 +1,431 @@
-import os
 import re
+import math
 import json
-import datetime as dt
+import csv
+import io
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, Tuple
+from datetime import datetime
+from typing import List, Optional, Tuple
+from urllib.parse import urlparse, urlencode, urlunparse, parse_qsl
 
 import streamlit as st
-
-# ============ Optional OpenAI support ============
-# This app supports both:
-# 1) OpenAI SDK v1.x (recommended)
-# 2) Fallback "no-AI" mode (template-based) if API key is missing.
-#
-# For OpenAI SDK v1.x:
-#   pip install openai>=1.0.0
-#   then: from openai import OpenAI
-try:
-    from openai import OpenAI  # type: ignore
-    OPENAI_AVAILABLE = True
-except Exception:
-    OPENAI_AVAILABLE = False
+import requests
+import xml.etree.ElementTree as ET
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def slugify(text: str) -> str:
-    text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
-    text = re.sub(r"[\s_-]+", "-", text)
-    text = re.sub(r"^-+|-+$", "", text)
-    return text[:120] if len(text) > 120 else text
+# =========================
+# Utils
+# =========================
+ATOM_NS = {
+    "atom": "http://www.w3.org/2005/Atom",
+}
 
+DEFAULT_MAX_RESULTS = 500
 
-def sanitize_filename(name: str) -> str:
-    name = re.sub(r"[^a-zA-Z0-9._-]+", "-", name).strip("-")
-    return name or "output"
-
-
-def wp_html_wrap(title: str, content_html: str) -> str:
-    # WordPress accepts raw HTML content in the editor.
-    # Wrap with minimal structure
-    return f"""<article>
-  <h1>{title}</h1>
-  {content_html}
-</article>
-"""
-
-
-def md_to_basic_html(md: str) -> str:
+def normalize_blog_url(raw: str) -> str:
     """
-    Minimal Markdown -> HTML converter for headings/bullets/paragraphs.
-    Not perfect; good enough for WP-ready HTML.
-    If you want full fidelity, use markdown library.
+    Accepts:
+      - https://example.com
+      - example.com
+      - example.blogspot.com
+    Returns normalized base URL with scheme and no trailing slash.
     """
-    lines = md.splitlines()
-    html_lines = []
-    in_ul = False
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if not re.match(r"^https?://", s, re.I):
+        s = "https://" + s
+    p = urlparse(s)
+    # Remove path/query/fragment, keep netloc
+    netloc = p.netloc.strip()
+    if not netloc:
+        return ""
+    return f"{p.scheme}://{netloc}"
 
-    for line in lines:
-        s = line.strip()
-        if not s:
-            if in_ul:
-                html_lines.append("</ul>")
-                in_ul = False
-            html_lines.append("")
-            continue
-
-        # Headings
-        if s.startswith("### "):
-            if in_ul:
-                html_lines.append("</ul>")
-                in_ul = False
-            html_lines.append(f"<h3>{s[4:].strip()}</h3>")
-            continue
-        if s.startswith("## "):
-            if in_ul:
-                html_lines.append("</ul>")
-                in_ul = False
-            html_lines.append(f"<h2>{s[3:].strip()}</h2>")
-            continue
-        if s.startswith("# "):
-            if in_ul:
-                html_lines.append("</ul>")
-                in_ul = False
-            html_lines.append(f"<h1>{s[2:].strip()}</h1>")
-            continue
-
-        # Bullets
-        if s.startswith("- ") or s.startswith("* "):
-            if not in_ul:
-                html_lines.append("<ul>")
-                in_ul = True
-            html_lines.append(f"<li>{s[2:].strip()}</li>")
-            continue
-
-        # Paragraph
-        if in_ul:
-            html_lines.append("</ul>")
-            in_ul = False
-        # basic bold/italic
-        p = s
-        p = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", p)
-        p = re.sub(r"\*(.+?)\*", r"<em>\1</em>", p)
-        html_lines.append(f"<p>{p}</p>")
-
-    if in_ul:
-        html_lines.append("</ul>")
-
-    return "\n".join([x for x in html_lines if x is not None])
-
-
-def build_wxr_single_post(
-    title: str,
-    slug: str,
-    content_html: str,
-    excerpt: str,
-    category: str,
-    tags: str,
-    status: str = "draft",
+def build_atom_url(
+    blog_base: str,
+    start_index: int = 1,
+    max_results: int = DEFAULT_MAX_RESULTS,
+    redirect_false: bool = True,
 ) -> str:
     """
-    Very simplified WXR (WordPress eXtended RSS) for importing a single post.
-    WP may still accept it; for production, you'd want a more complete WXR.
+    Build: https://domain/atom.xml?redirect=false&start-index=1&max-results=500
     """
-    pub_date = dt.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
-    post_date = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    base = normalize_blog_url(blog_base)
+    if not base:
+        return ""
 
-    tags_list = [t.strip() for t in tags.split(",") if t.strip()]
-    tag_xml = "\n".join(
-        [f'<category domain="post_tag" nicename="{slugify(t)}"><![CDATA[{t}]]></category>' for t in tags_list]
-    )
+    path = "/atom.xml"
+    query_items = []
+    if redirect_false:
+        query_items.append(("redirect", "false"))
+    query_items.extend([
+        ("start-index", str(start_index)),
+        ("max-results", str(max_results)),
+    ])
+    query = urlencode(query_items)
 
-    cat_xml = f'<category domain="category" nicename="{slugify(category)}"><![CDATA[{category}]]></category>' if category else ""
+    p = urlparse(base)
+    return urlunparse((p.scheme, p.netloc, path, "", query, ""))
 
-    # NOTE: content:encoded should be wrapped in CDATA
-    return f"""<?xml version="1.0" encoding="UTF-8" ?>
-<rss version="2.0"
-  xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/"
-  xmlns:content="http://purl.org/rss/1.0/modules/content/"
-  xmlns:wp="http://wordpress.org/export/1.2/">
-<channel>
-  <title>Streamlit Generated Export</title>
-  <link>https://example.com</link>
-  <description>Generated by Streamlit</description>
-  <pubDate>{pub_date}</pubDate>
-  <language>id-ID</language>
+def chunk_start_indices(total_posts: int, max_results: int) -> List[int]:
+    """
+    Returns [1, 1+max_results, 1+2*max_results, ...]
+    """
+    if total_posts <= 0:
+        return [1]
+    batches = math.ceil(total_posts / max_results)
+    return [1 + i * max_results for i in range(batches)]
 
-  <item>
-    <title><![CDATA[{title}]]></title>
-    <link>https://example.com/{slug}/</link>
-    <pubDate>{pub_date}</pubDate>
-    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/"><![CDATA[admin]]></dc:creator>
-    {cat_xml}
-    {tag_xml}
-    <guid isPermaLink="false">https://example.com/?p=1</guid>
-    <description></description>
-    <excerpt:encoded><![CDATA[{excerpt}]]></excerpt:encoded>
-    <content:encoded><![CDATA[{content_html}]]></content:encoded>
-    <wp:post_id>1</wp:post_id>
-    <wp:post_date><![CDATA[{post_date}]]></wp:post_date>
-    <wp:post_date_gmt><![CDATA[{post_date}]]></wp:post_date_gmt>
-    <wp:post_name><![CDATA[{slug}]]></wp:post_name>
-    <wp:status><![CDATA[{status}]]></wp:status>
-    <wp:post_type><![CDATA[post]]></wp:post_type>
-    <wp:is_sticky>0</wp:is_sticky>
-  </item>
-</channel>
-</rss>
-"""
-
+def safe_int(x: str, default: int, min_v: int, max_v: int) -> int:
+    try:
+        v = int(str(x).strip())
+    except Exception:
+        v = default
+    return max(min_v, min(max_v, v))
 
 @dataclass
-class GeneratedContent:
+class FeedEntry:
     title: str
-    meta_description: str
-    outline_md: str
-    article_md: str
-    article_html: str
-    wxr_xml: str
-    slug: str
-    raw: Dict[str, Any]
+    link: str
+    published: Optional[str] = None
+    updated: Optional[str] = None
 
+def parse_atom_feed(xml_text: str) -> Tuple[Optional[str], List[FeedEntry]]:
+    """
+    Parse Atom XML and return (feed_title, entries).
+    """
+    root = ET.fromstring(xml_text)
+    feed_title_el = root.find("atom:title", ATOM_NS)
+    feed_title = feed_title_el.text.strip() if feed_title_el is not None and feed_title_el.text else None
 
-def template_generate(topic: str, keywords: str, tone: str, length: str) -> GeneratedContent:
-    # Fallback generator without AI (basic template)
-    kw = [k.strip() for k in keywords.split(",") if k.strip()]
-    primary_kw = kw[0] if kw else topic
+    entries: List[FeedEntry] = []
+    for e in root.findall("atom:entry", ATOM_NS):
+        title_el = e.find("atom:title", ATOM_NS)
+        title = title_el.text.strip() if title_el is not None and title_el.text else "(no title)"
 
-    title = f"{topic}: Panduan Lengkap ({dt.datetime.now().year})"
-    meta = f"Pelajari {topic} secara lengkap: langkah, tips, dan contoh. Cocok untuk pemula. Kata kunci: {primary_kw}."
-    outline = f"""## Pendahuluan
-## Apa itu {topic}?
-## Manfaat {topic}
-## Langkah-langkah Praktis
-- Persiapan
-- Eksekusi
-- Evaluasi
-## Tips & Kesalahan Umum
-## Contoh Penerapan
-## FAQ
-## Penutup
-"""
-    article = f"""# {title}
+        link = ""
+        for l in e.findall("atom:link", ATOM_NS):
+            # prefer rel="alternate"
+            rel = l.attrib.get("rel", "")
+            href = l.attrib.get("href", "")
+            if rel == "alternate" and href:
+                link = href
+                break
+            if not link and href:
+                link = href
 
-**Kata kunci utama:** {primary_kw}  
-**Gaya bahasa:** {tone}  
-**Panjang:** {length}
+        pub_el = e.find("atom:published", ATOM_NS)
+        upd_el = e.find("atom:updated", ATOM_NS)
+        published = pub_el.text.strip() if pub_el is not None and pub_el.text else None
+        updated = upd_el.text.strip() if upd_el is not None and upd_el.text else None
 
-## Pendahuluan
-{topic} adalah topik yang relevan untuk dibahas karena membantu pembaca memahami konsep dan penerapannya.
+        entries.append(FeedEntry(title=title, link=link, published=published, updated=updated))
 
-## Apa itu {topic}?
-Jelaskan definisi {topic} dengan bahasa yang mudah dipahami. Sertakan konteks singkat.
+    return feed_title, entries
 
-## Manfaat {topic}
-- Meningkatkan pemahaman dan efisiensi
-- Mengurangi kesalahan umum
-- Membantu membuat keputusan lebih baik
-
-## Langkah-langkah Praktis
-### Persiapan
-Tuliskan apa saja yang perlu disiapkan.
-
-### Eksekusi
-Berikan langkah-langkah berurutan, gunakan poin agar mudah diikuti.
-
-### Evaluasi
-Cara mengecek hasil dan memperbaiki proses.
-
-## Tips & Kesalahan Umum
-Berikan tips ringkas dan daftar kesalahan yang sering terjadi.
-
-## Contoh Penerapan
-Berikan satu skenario contoh dan jelaskan hasilnya.
-
-## FAQ
-### Apa yang perlu dipelajari dulu?
-Mulai dari dasar dan praktik sederhana.
-
-### Berapa lama hasilnya terlihat?
-Tergantung konteks, konsistensi, dan kompleksitas.
-
-## Penutup
-Rangkum poin penting dan beri ajakan untuk mencoba.
-"""
-    slug = slugify(title)
-    html = wp_html_wrap(title, md_to_basic_html(article))
-    wxr = build_wxr_single_post(
-        title=title,
-        slug=slug,
-        content_html=html,
-        excerpt=meta,
-        category="Blog",
-        tags=keywords,
-        status="draft",
-    )
-    return GeneratedContent(
-        title=title,
-        meta_description=meta,
-        outline_md=outline,
-        article_md=article,
-        article_html=html,
-        wxr_xml=wxr,
-        slug=slug,
-        raw={"mode": "template"},
-    )
-
-
-def openai_generate(
-    client: "OpenAI",
-    topic: str,
-    keywords: str,
-    audience: str,
-    tone: str,
-    language: str,
-    length: str,
-    include_faq: bool,
-    include_cta: bool,
-) -> GeneratedContent:
-    # You can switch to another model if you want
-    model = "gpt-4o-mini"
-
-    system = f"""You are an expert Indonesian SEO blog writer.
-Output strictly as valid JSON with keys:
-title, meta_description, outline_md, article_md.
-Rules:
-- Language: {language}
-- Tone: {tone}
-- Audience: {audience}
-- Length: {length}
-- Use keywords naturally: {keywords}
-- Use Markdown headings with H2/H3.
-- Avoid fluff; be practical and accurate.
-- No plagiarism. No fabricated citations/claims.
-"""
-    user = {
-        "topic": topic,
-        "keywords": keywords,
-        "audience": audience,
-        "tone": tone,
-        "language": language,
-        "length": length,
-        "include_faq": include_faq,
-        "include_cta": include_cta,
-        "requirements": [
-            "Include a short intro and a clear conclusion.",
-            "If include_faq is true, add an FAQ section with 3-5 Q&As.",
-            "If include_cta is true, end with a gentle call-to-action.",
-        ],
+def fetch_feed(url: str, timeout_s: int = 15) -> Tuple[int, str]:
+    """
+    Returns (status_code, body_text). Raises for network errors.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Streamlit AGC Tool; +https://streamlit.io)",
+        "Accept": "application/atom+xml,application/xml;q=0.9,*/*;q=0.8",
     }
+    r = requests.get(url, headers=headers, timeout=timeout_s)
+    return r.status_code, r.text
 
-    resp = client.chat.completions.create(
-        model=model,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
-        ],
-        temperature=0.7,
-    )
+def entries_to_csv(entries: List[FeedEntry]) -> bytes:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["title", "link", "published", "updated"])
+    for e in entries:
+        writer.writerow([e.title, e.link, e.published or "", e.updated or ""])
+    return output.getvalue().encode("utf-8")
 
-    data = json.loads(resp.choices[0].message.content)
-
-    title = data.get("title", topic).strip()
-    meta = data.get("meta_description", "").strip()
-    outline = data.get("outline_md", "").strip()
-    article_md = data.get("article_md", "").strip()
-    slug = slugify(title)
-
-    article_html = wp_html_wrap(title, md_to_basic_html(article_md))
-    wxr = build_wxr_single_post(
-        title=title,
-        slug=slug,
-        content_html=article_html,
-        excerpt=meta,
-        category="Blog",
-        tags=keywords,
-        status="draft",
-    )
-
-    return GeneratedContent(
-        title=title,
-        meta_description=meta,
-        outline_md=outline,
-        article_md=article_md,
-        article_html=article_html,
-        wxr_xml=wxr,
-        slug=slug,
-        raw=data,
-    )
+def entries_to_json(entries: List[FeedEntry]) -> bytes:
+    data = [{
+        "title": e.title,
+        "link": e.link,
+        "published": e.published,
+        "updated": e.updated,
+    } for e in entries]
+    return json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-# ----------------------------
-# Streamlit UI
-# ----------------------------
-st.set_page_config(page_title="Auto Blog + WordPress Content Generator", page_icon="📝", layout="wide")
-st.title("📝 Auto Generate Konten Blog & WordPress (Streamlit)")
-
-st.write(
-    "Bikin konten reusable (Markdown + HTML + WordPress XML). "
-    "Deploy di Streamlit Community Cloud via GitHub."
+# =========================
+# UI
+# =========================
+st.set_page_config(
+    page_title="Blogger Atom Feed Builder",
+    page_icon="🧭",
+    layout="wide",
 )
 
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+      .stTabs [data-baseweb="tab-list"] { gap: 6px; }
+      .stTabs [data-baseweb="tab"] { padding-left: 14px; padding-right: 14px; }
+      .card {
+        border: 1px solid rgba(49, 51, 63, 0.2);
+        border-radius: 14px;
+        padding: 14px 16px;
+        background: rgba(255,255,255,0.02);
+      }
+      .muted { opacity: 0.75; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("🧭 Blogger Atom Feed Builder")
+st.write("Bangun URL Atom (`atom.xml`) dengan parameter rapi, generate batch sitemap, preview entries, dan export data.")
+
 with st.sidebar:
-    st.header("⚙️ Pengaturan")
-    mode = st.radio("Mode generator", ["AI (OpenAI)", "Template (tanpa AI)"], index=0)
+    st.header("⚙️ Konfigurasi")
+    blog_input = st.text_input(
+        "Base Blog URL",
+        value="https://namablogkamu.blogspot.com",
+        help="Bisa pakai custom domain atau blogspot. Contoh: https://example.com atau example.blogspot.com",
+    )
 
-    topic = st.text_input("Topik", value="Cara Membuat Landing Page untuk UMKM")
-    keywords = st.text_input("Kata kunci (pisahkan koma)", value="landing page umkm, contoh landing page, tips landing page")
-    audience = st.selectbox("Target audiens", ["Pemula", "UMKM", "Marketer", "Developer", "Umum"], index=1)
-    tone = st.selectbox("Gaya bahasa", ["Santai", "Profesional", "Edukatif", "Persuasif"], index=2)
-    language = st.selectbox("Bahasa", ["Indonesia", "English"], index=0)
-    length = st.selectbox("Panjang", ["Pendek (~800 kata)", "Sedang (~1500 kata)", "Panjang (~2500 kata)"], index=1)
+    redirect_false = st.toggle("Gunakan redirect=false", value=True, help="Biasanya dipakai agar URL konsisten.")
+    max_results = st.number_input(
+        "max-results",
+        min_value=1,
+        max_value=500,
+        value=DEFAULT_MAX_RESULTS,
+        step=1,
+        help="Blogger Atom feed biasanya efektif sampai 500 per request.",
+    )
 
-    include_faq = st.checkbox("Sertakan FAQ", value=True)
-    include_cta = st.checkbox("Sertakan CTA (ajak action)", value=True)
+    st.divider()
+    st.subheader("Batch Generator")
+    batch_mode = st.radio(
+        "Mode batch",
+        ["Berdasarkan total posting", "Berdasarkan jumlah batch"],
+        index=0,
+        help="Untuk blog besar, pecah menjadi beberapa URL start-index.",
+    )
+    if batch_mode == "Berdasarkan total posting":
+        total_posts = st.number_input("Perkiraan total posting", min_value=1, max_value=200000, value=1200, step=1)
+        batch_count = math.ceil(total_posts / max_results)
+    else:
+        batch_count = st.number_input("Jumlah batch", min_value=1, max_value=1000, value=3, step=1)
+        total_posts = int(batch_count * max_results)
 
-    category = st.text_input("Kategori WP (untuk WXR)", value="Blog")
-    status = st.selectbox("Status WP (untuk WXR)", ["draft", "publish"], index=0)
+    st.caption(f"Estimasi batch: **{batch_count}** (max-results={max_results}).")
+
+    st.divider()
+    preview_limit = st.number_input("Preview ambil berapa batch?", min_value=1, max_value=20, value=2, step=1)
+    timeout_s = st.number_input("Timeout fetch (detik)", min_value=5, max_value=60, value=15, step=1)
+
+# Normalize blog url
+blog_base = normalize_blog_url(blog_input)
+
+# Top cards
+c1, c2, c3 = st.columns([1.2, 1, 1])
+with c1:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("**Base URL (normalized)**")
+    st.markdown(f'<div class="mono">{blog_base or "—"}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Contoh final: <span class="mono">/atom.xml?redirect=false&start-index=1&max-results=500</span></div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with c2:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("**Konfigurasi**")
+    st.write(f"- redirect=false: `{redirect_false}`")
+    st.write(f"- max-results: `{int(max_results)}`")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with c3:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("**Batch**")
+    st.write(f"- Total posting (estimasi): `{int(total_posts)}`")
+    st.write(f"- Jumlah batch: `{int(batch_count)}`")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 st.divider()
 
-# Load API key (Streamlit secrets preferred)
-api_key = None
-if "OPENAI_API_KEY" in st.secrets:
-    api_key = st.secrets["OPENAI_API_KEY"]
-elif os.getenv("OPENAI_API_KEY"):
-    api_key = os.getenv("OPENAI_API_KEY")
+tabs = st.tabs(["URL Builder", "Batch URLs", "Preview & Export", "Tips Import/Search Console"])
 
-colA, colB = st.columns([1, 1])
+# =========================
+# Tab 1: URL Builder
+# =========================
+with tabs[0]:
+    st.subheader("🔧 URL Builder")
 
-with colA:
-    st.subheader("🧩 Generate")
-    generate_btn = st.button("Generate Konten", type="primary")
+    colA, colB, colC = st.columns([1, 1, 1])
+    with colA:
+        start_index = st.number_input("start-index", min_value=1, max_value=200000, value=1, step=1)
+    with colB:
+        st.write("")
+        st.write("")
+        single_url = build_atom_url(
+            blog_base=blog_base,
+            start_index=int(start_index),
+            max_results=int(max_results),
+            redirect_false=redirect_false,
+        )
+    with colC:
+        st.write("")
+        st.write("")
+        copy_help = "Copy manual dari field ini (Streamlit Cloud kadang tidak support clipboard direct)."
 
-with colB:
-    st.subheader("🔐 Status API")
-    if mode == "AI (OpenAI)":
-        if not OPENAI_AVAILABLE:
-            st.error("Library OpenAI belum terpasang. Pastikan requirements.txt berisi openai>=1.0.0")
-        elif not api_key:
-            st.warning("OPENAI_API_KEY belum ada. App akan otomatis fallback ke Template mode.")
-        else:
-            st.success("OPENAI_API_KEY terdeteksi. Siap generate dengan AI.")
+    st.markdown("**URL hasil**")
+    st.text_input(" ", value=single_url, label_visibility="collapsed", help=copy_help)
+
+    st.caption("Gunakan URL ini untuk cek feed, atau submit sebagai sitemap alternatif (tergantung kebutuhan).")
+
+# =========================
+# Tab 2: Batch URLs
+# =========================
+with tabs[1]:
+    st.subheader("🧩 Batch URLs (Multi start-index)")
+
+    if not blog_base:
+        st.warning("Isi Base Blog URL dulu di sidebar.")
     else:
-        st.info("Template mode aktif (tanpa AI).")
+        starts = chunk_start_indices(int(total_posts), int(max_results))
+        urls = [
+            build_atom_url(blog_base, s, int(max_results), redirect_false)
+            for s in starts
+        ]
 
-if "generated" not in st.session_state:
-    st.session_state.generated = None
+        st.write(f"Total URL batch: **{len(urls)}**")
+        st.markdown("**Daftar URL**")
+        st.code("\n".join(urls), language="text")
 
-if generate_btn:
-    with st.spinner("Sedang membuat konten..."):
-        try:
-            if mode == "AI (OpenAI)" and OPENAI_AVAILABLE and api_key:
-                client = OpenAI(api_key=api_key)
-                gen = openai_generate(
-                    client=client,
-                    topic=topic,
-                    keywords=keywords,
-                    audience=audience,
-                    tone=tone,
-                    language=language,
-                    length=length,
-                    include_faq=include_faq,
-                    include_cta=include_cta,
+        st.download_button(
+            "Download daftar URL (.txt)",
+            data=("\n".join(urls)).encode("utf-8"),
+            file_name="atom-batch-urls.txt",
+            mime="text/plain",
+        )
+
+# =========================
+# Tab 3: Preview & Export
+# =========================
+with tabs[2]:
+    st.subheader("👀 Preview Feed & Export")
+
+    if not blog_base:
+        st.warning("Isi Base Blog URL dulu di sidebar.")
+    else:
+        starts = chunk_start_indices(int(total_posts), int(max_results))
+        starts_preview = starts[: int(preview_limit)]
+        preview_urls = [
+            build_atom_url(blog_base, s, int(max_results), redirect_false)
+            for s in starts_preview
+        ]
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.markdown("**URL yang akan di-fetch (preview)**")
+            st.code("\n".join(preview_urls), language="text")
+        with col2:
+            st.markdown("**Aksi**")
+            do_preview = st.button("Fetch & Preview", type="primary")
+
+        if "preview_entries" not in st.session_state:
+            st.session_state.preview_entries = []
+        if "preview_meta" not in st.session_state:
+            st.session_state.preview_meta = {}
+
+        if do_preview:
+            all_entries: List[FeedEntry] = []
+            meta = {"fetched": [], "errors": []}
+
+            with st.spinner("Mengambil feed..."):
+                for u in preview_urls:
+                    try:
+                        status, body = fetch_feed(u, timeout_s=int(timeout_s))
+                        meta["fetched"].append({"url": u, "status": status})
+                        if status >= 400:
+                            meta["errors"].append({"url": u, "status": status, "message": "HTTP error"})
+                            continue
+                        feed_title, entries = parse_atom_feed(body)
+                        # attach feed title if available
+                        if feed_title and "feed_title" not in meta:
+                            meta["feed_title"] = feed_title
+                        all_entries.extend(entries)
+                    except Exception as e:
+                        meta["errors"].append({"url": u, "status": None, "message": str(e)})
+
+            st.session_state.preview_entries = all_entries
+            st.session_state.preview_meta = meta
+
+        meta = st.session_state.get("preview_meta", {})
+        entries: List[FeedEntry] = st.session_state.get("preview_entries", [])
+
+        if meta:
+            st.markdown("### Status Fetch")
+            st.write(f"Feed title: **{meta.get('feed_title','(tidak terdeteksi)')}**")
+            st.write(f"Total entries terkumpul: **{len(entries)}**")
+
+            if meta.get("errors"):
+                st.warning("Sebagian request gagal. Lihat detail di bawah.")
+                st.json(meta["errors"], expanded=False)
+
+        if entries:
+            # Show a clean table-like view
+            st.markdown("### Entries (preview)")
+            # Build rows
+            rows = []
+            for e in entries[: min(len(entries), 2000)]:  # safety cap
+                rows.append({
+                    "Title": e.title,
+                    "Link": e.link,
+                    "Published": e.published or "",
+                    "Updated": e.updated or "",
+                })
+            st.dataframe(rows, use_container_width=True, height=420)
+
+            # Exports
+            colx, coly, colz = st.columns([1, 1, 1])
+            with colx:
+                st.download_button(
+                    "Download CSV",
+                    data=entries_to_csv(entries),
+                    file_name="atom-preview-entries.csv",
+                    mime="text/csv",
                 )
-            else:
-                gen = template_generate(topic=topic, keywords=keywords, tone=tone, length=length)
+            with coly:
+                st.download_button(
+                    "Download JSON",
+                    data=entries_to_json(entries),
+                    file_name="atom-preview-entries.json",
+                    mime="application/json",
+                )
+            with colz:
+                # Also offer a cleaned list of post URLs
+                links = [e.link for e in entries if e.link]
+                st.download_button(
+                    "Download Links (.txt)",
+                    data=("\n".join(links)).encode("utf-8"),
+                    file_name="atom-post-links.txt",
+                    mime="text/plain",
+                )
+        else:
+            st.info("Belum ada preview. Klik **Fetch & Preview** untuk melihat isi feed.")
 
-            # overwrite WXR with chosen category/status
-            gen = GeneratedContent(
-                title=gen.title,
-                meta_description=gen.meta_description,
-                outline_md=gen.outline_md,
-                article_md=gen.article_md,
-                article_html=gen.article_html,
-                wxr_xml=build_wxr_single_post(
-                    title=gen.title,
-                    slug=gen.slug,
-                    content_html=gen.article_html,
-                    excerpt=gen.meta_description,
-                    category=category,
-                    tags=keywords,
-                    status=status,
-                ),
-                slug=gen.slug,
-                raw=gen.raw,
-            )
-
-            st.session_state.generated = gen
-            st.success("Selesai ✅")
-        except Exception as e:
-            st.error(f"Gagal generate: {e}")
-
-gen: Optional[GeneratedContent] = st.session_state.generated
-
-if gen:
-    st.subheader("✅ Hasil")
-
-    tabs = st.tabs(["Ringkasan", "Markdown", "HTML (WP Ready)", "WordPress XML (WXR)", "JSON (debug)"])
-
-    with tabs[0]:
-        st.markdown(f"### {gen.title}")
-        st.write(f"**Slug:** `{gen.slug}`")
-        st.write(f"**Meta description:** {gen.meta_description}")
-        st.markdown("**Outline:**")
-        st.markdown(gen.outline_md)
-
-    with tabs[1]:
-        st.code(gen.article_md, language="markdown")
-        fname = sanitize_filename(gen.slug) + ".md"
-        st.download_button("Download .md", data=gen.article_md.encode("utf-8"), file_name=fname, mime="text/markdown")
-
-    with tabs[2]:
-        st.code(gen.article_html, language="html")
-        fname = sanitize_filename(gen.slug) + ".html"
-        st.download_button("Download .html", data=gen.article_html.encode("utf-8"), file_name=fname, mime="text/html")
-
-    with tabs[3]:
-        st.code(gen.wxr_xml, language="xml")
-        fname = sanitize_filename(gen.slug) + ".xml"
-        st.download_button("Download WXR .xml", data=gen.wxr_xml.encode("utf-8"), file_name=fname, mime="application/xml")
-
-    with tabs[4]:
-        st.json(gen.raw)
-
-else:
-    st.info("Klik **Generate Konten** untuk membuat output.")
+# =========================
+# Tab 4: Tips
+# =========================
+with tabs[3]:
+    st.subheader("💡 Tips Pemakaian")
+    st.markdown(
+        """
+- **Untuk blog besar**, gunakan **Batch URLs** lalu submit beberapa `start-index` agar mencakup semua posting.
+- Kalau feed sulit diakses (HTTP 403/404):
+  - pastikan blog tidak private,
+  - coba pakai custom domain vs blogspot,
+  - cek apakah ada proteksi / firewall / setting.
+- `max-results=500` biasanya paling efisien (lebih besar dari itu tidak selalu didukung).
+- Preview ini menampilkan **judul/link/tanggal** dari Atom. Cocok untuk audit cepat atau export daftar URL posting.
+        """
+    )

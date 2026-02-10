@@ -123,22 +123,37 @@ def grab_core(url, mode):
     except: return None, None
 
 # 5. FUNGSI PEMBUAT XML (FIXED ID & PUBLISHED)
+# Tambahkan ini di paling atas file app.py bersama import lainnya
+import random
+import string
+
+# Cari dan ganti fungsi build_xml dengan ini
 def build_xml(items, format_type):
+    # Menggunakan waktu saat ini agar postingan muncul paling atas
     now_iso = datetime.now().isoformat() + "Z"
+    
     if format_type == "Blogger (Atom)":
         entries = ""
         for i in items:
+            # Membuat ID acak agar tidak dianggap duplikat oleh Blogger
+            random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
+            p_id = f"tag:blogger.com,1999:blog-{random_str}.post-{int(datetime.now().timestamp())}"
+            
             c_safe = i['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            p_id = f"tag:blogger.com,1999:blog-{int(datetime.now().timestamp())}.post-{hash(i['title'])}"
-            entries += f"""<entry><id>{p_id}</id><published>{now_iso}</published><updated>{now_iso}</updated><category scheme="http://www.blogger.com/atom/ns#" term="AGC-DenAbi"/><title type='text'>{i['title']}</title><content type='html'>{c_safe}</content><control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control><author><name>Den Abi</name></author></entry>"""
+            entries += f"""
+    <entry>
+        <id>{p_id}</id>
+        <published>{now_iso}</published>
+        <updated>{now_iso}</updated>
+        <category scheme="http://www.blogger.com/atom/ns#" term="AGC-DenAbi"/>
+        <title type='text'>{i['title']}</title>
+        <content type='html'>{c_safe}</content>
+        <control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control>
+        <author><name>Den Abi</name></author>
+    </entry>"""
         return f"<?xml version='1.0' encoding='UTF-8'?><feed xmlns='http://www.w3.org/2005/Atom'>{entries}</feed>"
-    else:
-        e = ""
-        for i in items:
-            now_wp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            e += f"""<item><title>{i['title']}</title><pubDate>{now_wp}</pubDate><content:encoded><![CDATA[{i['content']}]]></content:encoded><wp:status>publish</wp:status></item>"""
-        return f"<?xml version='1.0' encoding='UTF-8' ?><rss version='2.0' xmlns:content='http://purl.org/rss/1.0/modules/content/' xmlns:wp='http://wordpress.org/export/1.2/'><channel><wp:wxr_version>1.2</wp:wxr_version>{e}</channel></rss>"
-
+    
+    # ... (lanjutkan bagian WordPress jika ada)
 # 6. EKSEKUSI TOMBOL
 st.write("---")
 if st.button("🔥 MULAI EKSEKUSI SEKARANG"):
@@ -176,3 +191,4 @@ if st.session_state.antrean:
         st.rerun()
 
 st.markdown("<br><p style='text-align:center; font-size:12px; opacity:0.5;'>Dikembangkan oleh Proyek Den Abi © 2026 | Versi Tanpa GitHub</p>", unsafe_allow_html=True)
+

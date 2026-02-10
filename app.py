@@ -5,203 +5,165 @@ from datetime import datetime
 import base64
 import re
 
-# 1. KONFIGURASI HALAMAN
+# 1. KONFIGURASI HALAMAN MASTER
 st.set_page_config(
-    page_title="Den Abi Universal Generator Pro", 
-    page_icon="🌍", 
+    page_title="Den Abi Master Generator V9", 
+    page_icon="🚀", 
     layout="centered"
 )
 
-# 2. STYLE CSS CUSTOM (TAMPILAN PREMIUM)
+# 2. TAMPILAN PREMIUM (UI/UX MODERN)
 st.markdown("""
     <style>
-    /* Mengubah warna background utama */
     .stApp {
-        background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
-        color: #ffffff;
+        background: linear-gradient(135deg, #0d0d0d, #1a1a2e, #16213e);
+        color: #e0e0e0;
     }
-    /* Style Card Input */
     .stTextInput>div>div>input {
         background-color: #ffffff !important;
-        color: #1a1a1a !important;
-        border-radius: 10px !important;
-        font-weight: bold;
+        color: #121212 !important;
+        border-radius: 12px !important;
+        font-weight: 600;
+        border: 2px solid #5c49f5 !important;
     }
-    /* Style Tombol Utama */
     .stButton>button {
         width: 100%;
         border-radius: 12px;
         font-weight: 800;
-        height: 3.5em;
-        background: linear-gradient(45deg, #5c49f5, #00d2ff);
+        height: 3.8em;
+        background: linear-gradient(90deg, #5c49f5, #8e2de2);
         color: white;
         border: none;
-        transition: 0.3s;
-        box-shadow: 0px 4px 15px rgba(0, 0, 0, 0.3);
+        box-shadow: 0px 4px 20px rgba(92, 73, 245, 0.4);
     }
     .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0px 6px 20px rgba(92, 73, 245, 0.4);
+        background: linear-gradient(90deg, #8e2de2, #5c49f5);
+        transform: scale(1.02);
     }
-    /* Style Tombol Download */
-    .btn-download {
-        display: inline-block;
-        padding: 15px 30px;
-        background: linear-gradient(45deg, #fbc02d, #f57f17);
-        color: black !important;
-        text-decoration: none;
-        border-radius: 12px;
-        font-weight: bold;
+    .download-card {
+        padding: 20px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 15px;
+        border: 1px solid #5c49f5;
         text-align: center;
-        width: 100%;
-        box-shadow: 0px 4px 15px rgba(0, 0, 0, 0.2);
-    }
-    /* Footer */
-    .footer {
-        text-align: center;
-        margin-top: 50px;
-        font-size: 0.8em;
-        color: #aaa;
+        margin-top: 20px;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# 3. HEADER
-st.markdown("<h1 style='text-align: center; color: #00d2ff;'>🌍 DEN ABI UNIVERSAL PRO V8</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #ddd;'>Generate konten massal lintas platform dengan teknologi Server-Side Bypass.</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #5c49f5;'>🚀 DEN ABI MASTER GENERATOR V9</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; opacity: 0.8;'>Solusi Grab Konten Massal untuk Blogger & WordPress Tanpa Gagal.</p>", unsafe_allow_html=True)
 
-# 4. FORM INPUT
+# 3. AREA KONFIGURASI
 with st.container():
-    st.markdown("### 🔗 Konfigurasi Target")
-    target_url = st.text_input("Link Beranda / Homepage Situs Target:", placeholder="https://example.com/")
+    st.markdown("### 🛠️ Pengaturan Konten")
+    target_url = st.text_input("Link Beranda Blog Target:", placeholder="https://example.com/")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        output_format = st.selectbox("Format Output XML:", ["Blogger (Atom)", "WordPress (WXR)"])
-    with col2:
-        limit_post = st.number_input("Jumlah Postingan (Min 1, Max 50):", min_value=1, max_value=50, value=10)
+    c1, c2 = st.columns(2)
+    with c1:
+        output_format = st.selectbox("Format XML:", ["Blogger (Atom)", "WordPress (WXR)"])
+        grab_mode = st.selectbox("Mode Generate:", ["Semua Isi File", "Hanya Konten Teks", "Hanya Video"])
+    with c2:
+        limit_post = st.number_input("Jumlah Postingan (Max 50):", 1, 50, 10)
+        st.write("") # Spacer
+        st.write(f"📌 **Format:** {output_format}")
 
-# 5. LOGIKA CORE (GRABBER)
+# 4. LOGIKA PENGAMBILAN DATA
 if 'antrean' not in st.session_state:
     st.session_state.antrean = []
 
-def get_bulk_links(url):
+def get_feed_links(url):
     links = []
-    # Deteksi RSS Feed Otomatis
-    feed_url = url.rstrip('/') + '/feeds/posts/default?alt=rss' if 'blogspot' in url else url.rstrip('/') + '/feed/'
-    try:
-        res = requests.get(feed_url, timeout=10)
-        soup = BeautifulSoup(res.content, 'xml')
-        items = soup.find_all('item') or soup.find_all('entry')
-        for item in items[:limit_post]:
-            link = item.find('link').text if item.find('link') else item.find('link')['href']
-            links.append(link)
-    except:
-        st.error("Gagal mendeteksi feed otomatis. Situs mungkin diproteksi ketat.")
+    # Deteksi RSS Feed
+    base = url.rstrip('/')
+    f_urls = [f"{base}/feeds/posts/default?alt=rss", f"{base}/feed/", f"{base}/rss.xml"]
+    for f in f_urls:
+        try:
+            r = requests.get(f, timeout=7)
+            if r.status_code == 200:
+                s = BeautifulSoup(r.content, 'xml')
+                items = s.find_all('item') or s.find_all('entry')
+                for i in items[:limit_post]:
+                    lnk = i.find('link').text if i.find('link') else i.find('link')['href']
+                    links.append(lnk)
+                if links: break
+        except: continue
     return list(set(links))
 
-def grab_full_data(url):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+def grab_core(url, mode):
+    h = {'User-Agent': 'Mozilla/5.0'}
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.find('h1').get_text().strip() if soup.find('h1') else (soup.title.string if soup.title else "No Title")
+        r = requests.get(url, headers=h, timeout=10)
+        s = BeautifulSoup(r.text, 'html.parser')
+        t = s.find('h1').text.strip() if s.find('h1') else (s.title.string if s.title else "No Title")
         
-        content = ""
-        # Cari Gambar Utama
-        img = soup.find("meta", property="og:image")
-        if img: content += f'<img src="{img["content"]}" style="width:100%; border-radius:15px;"/><br/>'
-        
-        # Cari Video
-        iframes = soup.find_all('iframe')
-        for f in iframes:
-            if 'embed' in f.get('src', ''): content += str(f)
-            
-        # Isi Body
-        body = soup.find(class_=re.compile(r'post-body|entry-content|article-post'))
-        if body: content += str(body)
-            
-        return title, content
+        final_c = ""
+        # 1. Grab Gambar (Untuk Mode Semua)
+        if mode == "Semua Isi File":
+            og_img = s.find("meta", property="og:image")
+            if og_img: final_c += f'<img src="{og_img["content"]}" style="width:100%; border-radius:10px;"/><br/>'
+
+        # 2. Grab Konten Teks
+        if mode in ["Semua Isi File", "Hanya Konten Teks"]:
+            body = s.find(class_=re.compile(r'post-body|entry-content|article-post'))
+            if body: final_c += str(body)
+
+        # 3. Grab Video (IFRAME)
+        if mode in ["Semua Isi File", "Hanya Video"]:
+            for f in s.find_all('iframe'):
+                if 'embed' in f.get('src', ''):
+                    final_c += str(f)
+                    
+        return t, final_c
     except: return None, None
 
-# 6. GENERATOR FORMAT (FIX SYNTAX ERROR)
-def generate_blogger_xml(items):
-    entries = ""
-    for item in items:
+# 5. FUNGSI PEMBUAT XML (FIXED VERSION)
+def build_blogger(items):
+    e = ""
+    for i in items:
         now = datetime.now().isoformat() + "Z"
-        # Membersihkan teks untuk XML agar tidak error f-string
-        c_text = item['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        entries += f"""
-    <entry>
-        <category scheme="http://www.blogger.com/atom/ns#" term="AGC-DenAbi"/>
-        <title type='text'>{item['title']}</title>
-        <content type='html'>{c_text}</content>
-        <published>{now}</published>
-        <control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control>
-        <author><name>Den Abi</name></author>
-    </entry>"""
-    return f"<?xml version='1.0' encoding='UTF-8'?><feed xmlns='http://www.w3.org/2005/Atom' xmlns:blogger='http://schemas.google.com/blogger/2008'>{entries}</feed>"
+        safe_c = i['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        e += f"""<entry><category scheme="http://www.blogger.com/atom/ns#" term="AGC-DenAbi"/><title type='text'>{i['title']}</title><content type='html'>{safe_c}</content><published>{now}</published><control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control><author><name>Den Abi</name></author></entry>"""
+    return f"<?xml version='1.0' encoding='UTF-8'?><feed xmlns='http://www.w3.org/2005/Atom' xmlns:blogger='http://schemas.google.com/blogger/2008'>{e}</feed>"
 
-def generate_wordpress_xml(items):
-    items_xml = ""
-    for item in items:
+def build_wordpress(items):
+    e = ""
+    for i in items:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        items_xml += f"""
-        <item>
-            <title>{item['title']}</title>
-            <pubDate>{now}</pubDate>
-            <dc:creator>Den Abi</dc:creator>
-            <content:encoded><![CDATA[{item['content']}]]></content:encoded>
-            <wp:status>publish</wp:status>
-            <wp:post_type>post</wp:post_type>
-        </item>"""
-    return f"""<?xml version="1.0" encoding="UTF-8" ?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:wp="http://wordpress.org/export/1.2/"><channel><wp:wxr_version>1.2</wp:wxr_version>{items_xml}</channel></rss>"""
+        e += f"""<item><title>{i['title']}</title><pubDate>{now}</pubDate><dc:creator>Den Abi</dc:creator><content:encoded><![CDATA[{i['content']}]]></content:encoded><wp:status>publish</wp:status><wp:post_type>post</wp:post_type></item>"""
+    return f"""<?xml version="1.0" encoding="UTF-8" ?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:wp="http://wordpress.org/export/1.2/"><channel><wp:wxr_version>1.2</wp:wxr_version>{e}</channel></rss>"""
 
-# 7. TOMBOL AKSI
+# 6. EKSEKUSI
 st.write("---")
-if st.button("🚀 MULAI GENERATE MASSAL"):
+if st.button("🔥 GENERATE SEKARANG"):
     if target_url:
-        st.session_state.antrean = [] # Reset antrean
-        with st.spinner('Server sedang bekerja keras mengambil data...'):
-            links = get_bulk_links(target_url)
-            if links:
-                progress_bar = st.progress(0)
-                for i, link in enumerate(links):
-                    t, c = grab_full_data(link)
-                    if t and c:
-                        st.session_state.antrean.append({'title': t, 'content': c})
-                    progress_bar.progress((i + 1) / len(links))
-                st.success(f"Berhasil mengumpulkan {len(st.session_state.antrean)} postingan!")
+        st.session_state.antrean = []
+        with st.spinner('Menganalisis dan menarik data massal...'):
+            all_links = get_feed_links(target_url)
+            if all_links:
+                p_bar = st.progress(0)
+                for idx, l in enumerate(all_links):
+                    title, content = grab_core(l, grab_mode)
+                    if title and content:
+                        st.session_state.antrean.append({'title': title, 'content': content})
+                    p_bar.progress((idx + 1) / len(all_links))
+                st.success(f"Berhasil! {len(st.session_state.antrean)} postingan siap diunduh.")
             else:
-                st.error("Link tidak valid atau situs memblokir feed RSS.")
+                st.error("Gagal menemukan daftar postingan. Pastikan link benar.")
     else:
         st.warning("Silakan masukkan URL target.")
 
-# 8. AREA DOWNLOAD
+# 7. DOWNLOAD AREA
 if st.session_state.antrean:
-    st.markdown("### 📦 File Siap Diunduh")
-    
-    if output_format == "Blogger (Atom)":
-        final_xml = generate_blogger_xml(st.session_state.antrean)
-        f_name = f"Blogger_DenAbi_{datetime.now().strftime('%d%m%y')}.xml"
-    else:
-        final_xml = generate_wordpress_xml(st.session_state.antrean)
-        f_name = f"WordPress_DenAbi_{datetime.now().strftime('%d%m%y')}.xml"
-        
-    b64 = base64.b64encode(final_xml.encode()).decode()
-    
-    col_dl, col_rs = st.columns([3, 1])
-    with col_dl:
-        st.markdown(f'<a href="data:file/xml;base64,{b64}" download="{f_name}" class="btn-download">📥 DOWNLOAD XML {output_format.upper()}</a>', unsafe_allow_html=True)
-    with col_rs:
-        if st.button("🔄 RESET"):
-            st.session_state.antrean = []
-            st.rerun()
+    st.markdown("<div class='download-card'>", unsafe_allow_html=True)
+    xml_final = build_blogger(st.session_state.antrean) if output_format == "Blogger (Atom)" else build_wordpress(st.session_state.antrean)
+    f_ext = "xml"
+    b64 = base64.b64encode(xml_final.encode()).decode()
+    st.markdown(f'<h3>📦 {len(st.session_state.antrean)} File Siap Diunduh</h3>', unsafe_allow_html=True)
+    st.markdown(f'<a href="data:file/xml;base64,{b64}" download="DenAbi_{output_format}_{datetime.now().strftime("%H%M%S")}.{f_ext}" style="text-decoration:none;"><button style="width:100%; background:#fbc02d; color:black; border:none; padding:15px; border-radius:10px; font-weight:bold; cursor:pointer;">📥 DOWNLOAD SEKARANG</button></a>', unsafe_allow_html=True)
+    if st.button("🔄 RESET"):
+        st.session_state.antrean = []
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
-# 9. FOOTER
-st.markdown("""
-    <div class="footer">
-        Developed by Den Abi Project © 2026<br>
-        Optimized for Prostream & Goostream Network
-    </div>
-    """, unsafe_allow_html=True)
+st.markdown("<br><p style='text-align:center; font-size:12px; opacity:0.5;'>Den Abi Project © 2026 | Optimized for Prostream & Goostream Network</p>", unsafe_allow_html=True)

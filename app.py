@@ -1,183 +1,490 @@
-import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-from datetime import datetime
-import base64
+import os
 import re
+import json
+import datetime as dt
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, Tuple
 
-# --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="Den Abi Master Generator V11", page_icon="🚀", layout="centered")
+import streamlit as st
 
-# Custom CSS Premium & Hide Streamlit Elements
-st.markdown("""
-    <style>
-    header {visibility: hidden;}
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stDeployButton {display:none;}
-    
-    .main { background-color: #1a1a1a; color: #ffffff; }
-    /* Paksa Font Putih di Semua Input */
-    input, select, .stSelectbox div { 
-        color: #ffffff !important; 
-        background-color: #333 !important; 
-        -webkit-text-fill-color: #ffffff !important;
+# ============ Optional OpenAI support ============
+# This app supports both:
+# 1) OpenAI SDK v1.x (recommended)
+# 2) Fallback "no-AI" mode (template-based) if API key is missing.
+#
+# For OpenAI SDK v1.x:
+#   pip install openai>=1.0.0
+#   then: from openai import OpenAI
+try:
+    from openai import OpenAI  # type: ignore
+    OPENAI_AVAILABLE = True
+except Exception:
+    OPENAI_AVAILABLE = False
+
+
+# ----------------------------
+# Helpers
+# ----------------------------
+def slugify(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_-]+", "-", text)
+    text = re.sub(r"^-+|-+$", "", text)
+    return text[:120] if len(text) > 120 else text
+
+
+def sanitize_filename(name: str) -> str:
+    name = re.sub(r"[^a-zA-Z0-9._-]+", "-", name).strip("-")
+    return name or "output"
+
+
+def wp_html_wrap(title: str, content_html: str) -> str:
+    # WordPress accepts raw HTML content in the editor.
+    # Wrap with minimal structure
+    return f"""<article>
+  <h1>{title}</h1>
+  {content_html}
+</article>
+"""
+
+
+def md_to_basic_html(md: str) -> str:
+    """
+    Minimal Markdown -> HTML converter for headings/bullets/paragraphs.
+    Not perfect; good enough for WP-ready HTML.
+    If you want full fidelity, use markdown library.
+    """
+    lines = md.splitlines()
+    html_lines = []
+    in_ul = False
+
+    for line in lines:
+        s = line.strip()
+        if not s:
+            if in_ul:
+                html_lines.append("</ul>")
+                in_ul = False
+            html_lines.append("")
+            continue
+
+        # Headings
+        if s.startswith("### "):
+            if in_ul:
+                html_lines.append("</ul>")
+                in_ul = False
+            html_lines.append(f"<h3>{s[4:].strip()}</h3>")
+            continue
+        if s.startswith("## "):
+            if in_ul:
+                html_lines.append("</ul>")
+                in_ul = False
+            html_lines.append(f"<h2>{s[3:].strip()}</h2>")
+            continue
+        if s.startswith("# "):
+            if in_ul:
+                html_lines.append("</ul>")
+                in_ul = False
+            html_lines.append(f"<h1>{s[2:].strip()}</h1>")
+            continue
+
+        # Bullets
+        if s.startswith("- ") or s.startswith("* "):
+            if not in_ul:
+                html_lines.append("<ul>")
+                in_ul = True
+            html_lines.append(f"<li>{s[2:].strip()}</li>")
+            continue
+
+        # Paragraph
+        if in_ul:
+            html_lines.append("</ul>")
+            in_ul = False
+        # basic bold/italic
+        p = s
+        p = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", p)
+        p = re.sub(r"\*(.+?)\*", r"<em>\1</em>", p)
+        html_lines.append(f"<p>{p}</p>")
+
+    if in_ul:
+        html_lines.append("</ul>")
+
+    return "\n".join([x for x in html_lines if x is not None])
+
+
+def build_wxr_single_post(
+    title: str,
+    slug: str,
+    content_html: str,
+    excerpt: str,
+    category: str,
+    tags: str,
+    status: str = "draft",
+) -> str:
+    """
+    Very simplified WXR (WordPress eXtended RSS) for importing a single post.
+    WP may still accept it; for production, you'd want a more complete WXR.
+    """
+    pub_date = dt.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+    post_date = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    tags_list = [t.strip() for t in tags.split(",") if t.strip()]
+    tag_xml = "\n".join(
+        [f'<category domain="post_tag" nicename="{slugify(t)}"><![CDATA[{t}]]></category>' for t in tags_list]
+    )
+
+    cat_xml = f'<category domain="category" nicename="{slugify(category)}"><![CDATA[{category}]]></category>' if category else ""
+
+    # NOTE: content:encoded should be wrapped in CDATA
+    return f"""<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0"
+  xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/"
+  xmlns:content="http://purl.org/rss/1.0/modules/content/"
+  xmlns:wp="http://wordpress.org/export/1.2/">
+<channel>
+  <title>Streamlit Generated Export</title>
+  <link>https://example.com</link>
+  <description>Generated by Streamlit</description>
+  <pubDate>{pub_date}</pubDate>
+  <language>id-ID</language>
+
+  <item>
+    <title><![CDATA[{title}]]></title>
+    <link>https://example.com/{slug}/</link>
+    <pubDate>{pub_date}</pubDate>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/"><![CDATA[admin]]></dc:creator>
+    {cat_xml}
+    {tag_xml}
+    <guid isPermaLink="false">https://example.com/?p=1</guid>
+    <description></description>
+    <excerpt:encoded><![CDATA[{excerpt}]]></excerpt:encoded>
+    <content:encoded><![CDATA[{content_html}]]></content:encoded>
+    <wp:post_id>1</wp:post_id>
+    <wp:post_date><![CDATA[{post_date}]]></wp:post_date>
+    <wp:post_date_gmt><![CDATA[{post_date}]]></wp:post_date_gmt>
+    <wp:post_name><![CDATA[{slug}]]></wp:post_name>
+    <wp:status><![CDATA[{status}]]></wp:status>
+    <wp:post_type><![CDATA[post]]></wp:post_type>
+    <wp:is_sticky>0</wp:is_sticky>
+  </item>
+</channel>
+</rss>
+"""
+
+
+@dataclass
+class GeneratedContent:
+    title: str
+    meta_description: str
+    outline_md: str
+    article_md: str
+    article_html: str
+    wxr_xml: str
+    slug: str
+    raw: Dict[str, Any]
+
+
+def template_generate(topic: str, keywords: str, tone: str, length: str) -> GeneratedContent:
+    # Fallback generator without AI (basic template)
+    kw = [k.strip() for k in keywords.split(",") if k.strip()]
+    primary_kw = kw[0] if kw else topic
+
+    title = f"{topic}: Panduan Lengkap ({dt.datetime.now().year})"
+    meta = f"Pelajari {topic} secara lengkap: langkah, tips, dan contoh. Cocok untuk pemula. Kata kunci: {primary_kw}."
+    outline = f"""## Pendahuluan
+## Apa itu {topic}?
+## Manfaat {topic}
+## Langkah-langkah Praktis
+- Persiapan
+- Eksekusi
+- Evaluasi
+## Tips & Kesalahan Umum
+## Contoh Penerapan
+## FAQ
+## Penutup
+"""
+    article = f"""# {title}
+
+**Kata kunci utama:** {primary_kw}  
+**Gaya bahasa:** {tone}  
+**Panjang:** {length}
+
+## Pendahuluan
+{topic} adalah topik yang relevan untuk dibahas karena membantu pembaca memahami konsep dan penerapannya.
+
+## Apa itu {topic}?
+Jelaskan definisi {topic} dengan bahasa yang mudah dipahami. Sertakan konteks singkat.
+
+## Manfaat {topic}
+- Meningkatkan pemahaman dan efisiensi
+- Mengurangi kesalahan umum
+- Membantu membuat keputusan lebih baik
+
+## Langkah-langkah Praktis
+### Persiapan
+Tuliskan apa saja yang perlu disiapkan.
+
+### Eksekusi
+Berikan langkah-langkah berurutan, gunakan poin agar mudah diikuti.
+
+### Evaluasi
+Cara mengecek hasil dan memperbaiki proses.
+
+## Tips & Kesalahan Umum
+Berikan tips ringkas dan daftar kesalahan yang sering terjadi.
+
+## Contoh Penerapan
+Berikan satu skenario contoh dan jelaskan hasilnya.
+
+## FAQ
+### Apa yang perlu dipelajari dulu?
+Mulai dari dasar dan praktik sederhana.
+
+### Berapa lama hasilnya terlihat?
+Tergantung konteks, konsistensi, dan kompleksitas.
+
+## Penutup
+Rangkum poin penting dan beri ajakan untuk mencoba.
+"""
+    slug = slugify(title)
+    html = wp_html_wrap(title, md_to_basic_html(article))
+    wxr = build_wxr_single_post(
+        title=title,
+        slug=slug,
+        content_html=html,
+        excerpt=meta,
+        category="Blog",
+        tags=keywords,
+        status="draft",
+    )
+    return GeneratedContent(
+        title=title,
+        meta_description=meta,
+        outline_md=outline,
+        article_md=article,
+        article_html=html,
+        wxr_xml=wxr,
+        slug=slug,
+        raw={"mode": "template"},
+    )
+
+
+def openai_generate(
+    client: "OpenAI",
+    topic: str,
+    keywords: str,
+    audience: str,
+    tone: str,
+    language: str,
+    length: str,
+    include_faq: bool,
+    include_cta: bool,
+) -> GeneratedContent:
+    # You can switch to another model if you want
+    model = "gpt-4o-mini"
+
+    system = f"""You are an expert Indonesian SEO blog writer.
+Output strictly as valid JSON with keys:
+title, meta_description, outline_md, article_md.
+Rules:
+- Language: {language}
+- Tone: {tone}
+- Audience: {audience}
+- Length: {length}
+- Use keywords naturally: {keywords}
+- Use Markdown headings with H2/H3.
+- Avoid fluff; be practical and accurate.
+- No plagiarism. No fabricated citations/claims.
+"""
+    user = {
+        "topic": topic,
+        "keywords": keywords,
+        "audience": audience,
+        "tone": tone,
+        "language": language,
+        "length": length,
+        "include_faq": include_faq,
+        "include_cta": include_cta,
+        "requirements": [
+            "Include a short intro and a clear conclusion.",
+            "If include_faq is true, add an FAQ section with 3-5 Q&As.",
+            "If include_cta is true, end with a gentle call-to-action.",
+        ],
     }
-    label { color: #ffffff !important; }
-    
-    .stButton>button { 
-        width: 100%; border-radius: 8px; font-weight: bold; height: 3em; 
-        background-color: #5c49f5; color: white; border: none;
-    }
-    .btn-download {
-        display: block; width: 100%; padding: 10px; background-color: #fbc02d; 
-        color: black !important; text-align: center; border-radius: 8px; 
-        font-weight: bold; text-decoration: none;
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
-st.title("🚀 Den Abi Master Generator V11")
-st.info("Mode: Jalur Atom XML (Max 500 Post) & Single Grab Manual.")
+    resp = client.chat.completions.create(
+        model=model,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+        ],
+        temperature=0.7,
+    )
 
-# --- AREA INPUT ---
-with st.container():
-    target_url = st.text_input("Target URL (Masukkan Link Beranda atau Link Postingan):", placeholder="https://example.blogspot.com/")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        output_format = st.selectbox("Format XML Output:", ["Blogger (Atom)", "WordPress (WXR)"])
-        mode = st.selectbox("Mode Grab:", ["Semua File", "Konten Teks", "Hanya Video"])
-    with col2:
-        limit_post = st.number_input("Limit Post (Bulk):", min_value=1, max_value=500, value=10)
-        grab_type = st.radio("Metode Grab:", ["Otomatis (Bulk)", "Manual (Single)"])
+    data = json.loads(resp.choices[0].message.content)
 
-# --- FUNGSI CORE GRABBER ---
-def perform_grab(url, grab_mode):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'}
-    try:
-        res = requests.get(url, headers=headers, timeout=15)
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        title_tag = soup.find('h1') or soup.find('h3', class_='post-title') or soup.find('title')
-        title = title_tag.text.strip() if title_tag else "No Title"
-        
-        final_html = ""
-        # Filter Konten berdasarkan Mode
-        if grab_mode in ["Semua File", "Hanya Konten Teks"]:
-            body = soup.find(class_=re.compile(r'post-body|entry-content|article-post'))
-            if body: final_html += str(body)
-            
-        if grab_mode in ["Semua File", "Hanya Video"]:
-            iframes = soup.find_all('iframe')
-            for f in iframes:
-                if any(x in f.get('src', '').lower() for x in ['embed', 'video', 'youtube']):
-                    final_html += str(f)
-                    
-        if grab_mode == "Semua File":
-            img = soup.find("meta", property="og:image")
-            if img: final_html = f'<img src="{img["content"]}" style="width:100%;"/><br/>' + final_html
+    title = data.get("title", topic).strip()
+    meta = data.get("meta_description", "").strip()
+    outline = data.get("outline_md", "").strip()
+    article_md = data.get("article_md", "").strip()
+    slug = slugify(title)
 
-        return title, final_html
-    except:
-        return None, None
+    article_html = wp_html_wrap(title, md_to_basic_html(article_md))
+    wxr = build_wxr_single_post(
+        title=title,
+        slug=slug,
+        content_html=article_html,
+        excerpt=meta,
+        category="Blog",
+        tags=keywords,
+        status="draft",
+    )
 
-# --- FUNGSI JALUR ATOM (BULK) ---
-def get_atom_links(url, limit):
-    base = url.rstrip('/')
-    atom_url = f"{base}/atom.xml?redirect=false&start-index=1&max-results={limit}"
-    links = []
-    try:
-        r = requests.get(atom_url, timeout=15)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.content, 'xml')
-            entries = soup.find_all('entry')
-            for entry in entries:
-                link_tag = entry.find('link', rel='alternate')
-                if link_tag: links.append(link_tag['href'])
-    except: pass
-    return list(set(links))
+    return GeneratedContent(
+        title=title,
+        meta_description=meta,
+        outline_md=outline,
+        article_md=article_md,
+        article_html=article_html,
+        wxr_xml=wxr,
+        slug=slug,
+        raw=data,
+    )
 
-# --- FUNGSI XML GENERATOR ---
-def generate_xml_output(items, format_type):
-    now_iso = datetime.now().isoformat() + "Z"
-    
-    if format_type == "Blogger (Atom)":
-        entries = ""
-        for i in items:
-            # Escape XML agar konten HTML tidak rusak
-            c_safe = i['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            # Membuat ID Unik agar Blogger mengenali ini sebagai postingan baru
-            post_id = f"tag:blogger.com,1999:blog-denabi.{int(datetime.now().timestamp())}"
-            
-            entries += f"""
-    <entry>
-        <id>{post_id}</id>
-        <published>{now_iso}</published>
-        <updated>{now_iso}</updated>
-        <category scheme="http://www.blogger.com/atom/ns#" term="AGC-DenAbi"/>
-        <title type='text'>{i['title']}</title>
-        <content type='html'>{c_safe}</content>
-        <link rel='edit' type='application/atom+xml' href='#'/>
-        <link rel='self' type='application/atom+xml' href='#'/>
-        <link rel='alternate' type='text/html' href='http://www.prostream.my.id/'/>
-        <author><name>Den Abi</name></author>
-        <control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control>
-    </entry>"""
-        
-        # Header XML Blogger harus Lengkap
-        return f"""<?xml version='1.0' encoding='UTF-8'?>
-<feed xmlns='http://www.w3.org/2005/Atom' xmlns:blogger='http://schemas.google.com/blogger/2008' xmlns:thr='http://purl.org/syndication/thread/1.0'>
-<id>tag:blogger.com,1999:blog-denabi.archive</id>
-<updated>{now_iso}</updated>
-<title type='text'>Den Abi Master Export</title>
-<generator version='7.00' uri='http://www.blogger.com'>Blogger</generator>
-{entries}
-</feed>"""
-    
-    else: # WordPress Tetap
-        entries = ""
-        for i in items:
-            entries += f"<item><title>{i['title']}</title><pubDate>{now_iso}</pubDate><content:encoded><![CDATA[{i['content']}]]></content:encoded><wp:status>publish</wp:status></item>"
-        return f"<?xml version='1.0' encoding='UTF-8' ?><rss version='2.0' xmlns:content='http://purl.org/rss/1.0/modules/content/' xmlns:wp='http://wordpress.org/export/1.2/'><channel><wp:wxr_version>1.2</wp:wxr_version>{entries}</channel></rss>"
 
-# --- EKSEKUSI ---
-if 'antrean' not in st.session_state:
-    st.session_state.antrean = []
+# ----------------------------
+# Streamlit UI
+# ----------------------------
+st.set_page_config(page_title="Auto Blog + WordPress Content Generator", page_icon="📝", layout="wide")
+st.title("📝 Auto Generate Konten Blog & WordPress (Streamlit)")
 
-if st.button("🔥 MULAI EKSEKUSI GENERATOR"):
-    if target_url:
-        st.session_state.antrean = []
-        with st.spinner('Sedang memproses jalur Atom...'):
-            if grab_type == "Otomatis (Bulk)":
-                links = get_atom_links(target_url, limit_post)
-                if links:
-                    p_bar = st.progress(0)
-                    for idx, l in enumerate(links):
-                        t, c = perform_grab(l, mode)
-                        if t and c: st.session_state.antrean.append({'title': t, 'content': c})
-                        p_bar.progress((idx + 1) / len(links))
-                    st.success(f"Berhasil mengumpulkan {len(st.session_state.antrean)} postingan!")
-                else:
-                    st.error("Gagal mendeteksi jalur Atom. Pastikan URL adalah Beranda Blog.")
-            else:
-                t, c = perform_grab(target_url, mode)
-                if t and c:
-                    st.session_state.antrean.append({'title': t, 'content': c})
-                    st.success(f"Berhasil Manual Grab: {t}")
+st.write(
+    "Bikin konten reusable (Markdown + HTML + WordPress XML). "
+    "Deploy di Streamlit Community Cloud via GitHub."
+)
+
+with st.sidebar:
+    st.header("⚙️ Pengaturan")
+    mode = st.radio("Mode generator", ["AI (OpenAI)", "Template (tanpa AI)"], index=0)
+
+    topic = st.text_input("Topik", value="Cara Membuat Landing Page untuk UMKM")
+    keywords = st.text_input("Kata kunci (pisahkan koma)", value="landing page umkm, contoh landing page, tips landing page")
+    audience = st.selectbox("Target audiens", ["Pemula", "UMKM", "Marketer", "Developer", "Umum"], index=1)
+    tone = st.selectbox("Gaya bahasa", ["Santai", "Profesional", "Edukatif", "Persuasif"], index=2)
+    language = st.selectbox("Bahasa", ["Indonesia", "English"], index=0)
+    length = st.selectbox("Panjang", ["Pendek (~800 kata)", "Sedang (~1500 kata)", "Panjang (~2500 kata)"], index=1)
+
+    include_faq = st.checkbox("Sertakan FAQ", value=True)
+    include_cta = st.checkbox("Sertakan CTA (ajak action)", value=True)
+
+    category = st.text_input("Kategori WP (untuk WXR)", value="Blog")
+    status = st.selectbox("Status WP (untuk WXR)", ["draft", "publish"], index=0)
+
+st.divider()
+
+# Load API key (Streamlit secrets preferred)
+api_key = None
+if "OPENAI_API_KEY" in st.secrets:
+    api_key = st.secrets["OPENAI_API_KEY"]
+elif os.getenv("OPENAI_API_KEY"):
+    api_key = os.getenv("OPENAI_API_KEY")
+
+colA, colB = st.columns([1, 1])
+
+with colA:
+    st.subheader("🧩 Generate")
+    generate_btn = st.button("Generate Konten", type="primary")
+
+with colB:
+    st.subheader("🔐 Status API")
+    if mode == "AI (OpenAI)":
+        if not OPENAI_AVAILABLE:
+            st.error("Library OpenAI belum terpasang. Pastikan requirements.txt berisi openai>=1.0.0")
+        elif not api_key:
+            st.warning("OPENAI_API_KEY belum ada. App akan otomatis fallback ke Template mode.")
+        else:
+            st.success("OPENAI_API_KEY terdeteksi. Siap generate dengan AI.")
     else:
-        st.warning("Masukkan URL terlebih dahulu!")
+        st.info("Template mode aktif (tanpa AI).")
 
-# --- DOWNLOAD AREA ---
-st.write("---")
-if st.session_state.antrean:
-    xml_data = generate_xml_output(st.session_state.antrean, output_format)
-    b64 = base64.b64encode(xml_data.encode()).decode()
-    st.markdown(f'<a href="data:file/xml;base64,{b64}" download="DenAbi_V11_{output_format}.xml" class="btn-download">📥 DOWNLOAD {len(st.session_state.antrean)} ITEM ({output_format})</a>', unsafe_allow_html=True)
-    if st.button("RESET DAFTAR"):
-        st.session_state.antrean = []
-        st.rerun()
+if "generated" not in st.session_state:
+    st.session_state.generated = None
 
-st.caption("Developed by Den Abi Project © 2026 | Atom XML Path V11")
+if generate_btn:
+    with st.spinner("Sedang membuat konten..."):
+        try:
+            if mode == "AI (OpenAI)" and OPENAI_AVAILABLE and api_key:
+                client = OpenAI(api_key=api_key)
+                gen = openai_generate(
+                    client=client,
+                    topic=topic,
+                    keywords=keywords,
+                    audience=audience,
+                    tone=tone,
+                    language=language,
+                    length=length,
+                    include_faq=include_faq,
+                    include_cta=include_cta,
+                )
+            else:
+                gen = template_generate(topic=topic, keywords=keywords, tone=tone, length=length)
 
+            # overwrite WXR with chosen category/status
+            gen = GeneratedContent(
+                title=gen.title,
+                meta_description=gen.meta_description,
+                outline_md=gen.outline_md,
+                article_md=gen.article_md,
+                article_html=gen.article_html,
+                wxr_xml=build_wxr_single_post(
+                    title=gen.title,
+                    slug=gen.slug,
+                    content_html=gen.article_html,
+                    excerpt=gen.meta_description,
+                    category=category,
+                    tags=keywords,
+                    status=status,
+                ),
+                slug=gen.slug,
+                raw=gen.raw,
+            )
+
+            st.session_state.generated = gen
+            st.success("Selesai ✅")
+        except Exception as e:
+            st.error(f"Gagal generate: {e}")
+
+gen: Optional[GeneratedContent] = st.session_state.generated
+
+if gen:
+    st.subheader("✅ Hasil")
+
+    tabs = st.tabs(["Ringkasan", "Markdown", "HTML (WP Ready)", "WordPress XML (WXR)", "JSON (debug)"])
+
+    with tabs[0]:
+        st.markdown(f"### {gen.title}")
+        st.write(f"**Slug:** `{gen.slug}`")
+        st.write(f"**Meta description:** {gen.meta_description}")
+        st.markdown("**Outline:**")
+        st.markdown(gen.outline_md)
+
+    with tabs[1]:
+        st.code(gen.article_md, language="markdown")
+        fname = sanitize_filename(gen.slug) + ".md"
+        st.download_button("Download .md", data=gen.article_md.encode("utf-8"), file_name=fname, mime="text/markdown")
+
+    with tabs[2]:
+        st.code(gen.article_html, language="html")
+        fname = sanitize_filename(gen.slug) + ".html"
+        st.download_button("Download .html", data=gen.article_html.encode("utf-8"), file_name=fname, mime="text/html")
+
+    with tabs[3]:
+        st.code(gen.wxr_xml, language="xml")
+        fname = sanitize_filename(gen.slug) + ".xml"
+        st.download_button("Download WXR .xml", data=gen.wxr_xml.encode("utf-8"), file_name=fname, mime="application/xml")
+
+    with tabs[4]:
+        st.json(gen.raw)
+
+else:
+    st.info("Klik **Generate Konten** untuk membuat output.")

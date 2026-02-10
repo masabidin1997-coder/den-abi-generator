@@ -6,124 +6,136 @@ import base64
 import re
 
 # Konfigurasi Halaman
-st.set_page_config(page_title="Den Abi Multi-Generator", page_icon="🚀", layout="centered")
+st.set_page_config(page_title="Den Abi Universal Generator", page_icon="🌍", layout="centered")
 
-# Custom CSS untuk tampilan premium
-st.markdown("""
-    <style>
-    .main { background-color: #1a1a1a; color: #ffffff; }
-    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; height: 3em; background-color: #5c49f5; color: white; }
-    .stTextInput>div>div>input { color: #000000; font-weight: bold; }
-    </style>
-    """, unsafe_allow_html=True)
+st.title("🌍 Den Abi Universal Generator V7")
+st.write("Generate konten massal untuk Blogger atau WordPress dalam satu klik!")
 
-st.title("🚀 Den Abi Multi-Generator V5")
-st.info("Alat ini bekerja di sisi server. Bebas blokir CORS dan lancar di semua browser HP/Laptop.")
+# Input URL
+target_url = st.text_input("Link Homepage Blog Target:", placeholder="https://example.com/")
 
-# Form Input
-with st.container():
-    target_url = st.text_input("Target URL:", placeholder="https://example.com/post-link")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        platform = st.selectbox("Tipe Website:", ["Auto-Detect", "WordPress", "Blogger"])
-    with col2:
-        mode = st.selectbox("Mode Grab:", ["Semua File", "Konten Teks", "Hanya Video"])
+# Opsi Output
+st.write("---")
+col_opt1, col_opt2 = st.columns(2)
+with col_opt1:
+    output_format = st.radio("Pilih Format Output XML:", ("Blogger (Atom)", "WordPress (WXR)"))
+with col_opt2:
+    limit_post = st.number_input("Maksimal Postingan:", min_value=1, max_value=50, value=10)
 
-# Fungsi Grabber
-def perform_grab(url, platform_type, grab_mode):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+if 'antrean' not in st.session_state:
+    st.session_state.antrean = []
+
+# --- FUNGSI CORE ---
+
+def get_bulk_links(url):
+    links = []
+    # Deteksi Feed
+    feed_url = url.rstrip('/') + '/feeds/posts/default?alt=rss' if 'blogspot' in url else url.rstrip('/') + '/feed/'
     try:
-        res = requests.get(url, headers=headers, timeout=15)
-        res.raise_for_status()
+        res = requests.get(feed_url, timeout=10)
+        soup = BeautifulSoup(res.content, 'xml')
+        items = soup.find_all('item') or soup.find_all('entry')
+        for item in items[:limit_post]:
+            link = item.find('link').text if item.find('link') else item.find('link')['href']
+            links.append(link)
+    except:
+        st.error("Gagal mendeteksi feed otomatis.")
+    return list(set(links))
+
+def grab_full_data(url):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, 'html.parser')
+        title = soup.find('h1').get_text().strip() if soup.find('h1') else (soup.title.string if soup.title else "No Title")
         
-        # Penentuan Judul
-        title = soup.find('h1').text.strip() if soup.find('h1') else (soup.title.string if soup.title else "No Title")
+        # Grab Gambar & Video
+        content = ""
+        img = soup.find("meta", property="og:image")
+        if img: content += f'<img src="{img["content"]}" style="width:100%; border-radius:10px;"/><br/>'
         
-        # Logika Pengambilan Konten
-        final_html = ""
-        
-        if grab_mode == "Konten Teks":
-            # Mencari kontainer konten umum
-            body = soup.find(class_=re.compile(r'post-body|entry-content|article-post'))
-            final_html = str(body) if body else "Konten teks tidak ditemukan."
+        iframes = soup.find_all('iframe')
+        for f in iframes:
+            if 'embed' in f.get('src', ''): content += str(f)
             
-        elif grab_mode == "Hanya Video":
-            iframes = soup.find_all('iframe')
-            for f in iframes:
-                src = f.get('src', '')
-                if any(x in src for x in ['embed', 'video', 'player', 'bebas']):
-                    final_html += str(f)
-                    
-        else: # Semua File
-            img = soup.find("meta", property="og:image")
-            img_tag = f'<img src="{img["content"]}" style="max-width:100%;"/><br/>' if img else ""
-            vids = ""
-            for f in soup.find_all('iframe'):
-                if any(x in f.get('src', '') for x in ['embed', 'video']):
-                    vids += str(f)
-            final_html = f"{img_tag}\n{vids}"
+        body = soup.find(class_=re.compile(r'post-body|entry-content|article-post'))
+        if body: content += str(body)
+            
+        return title, content
+    except: return None, None
 
-        return title, final_html
-    except Exception as e:
-        st.error(f"Gagal menarik data: {str(e)}")
-        return None, None
+# --- GENERATOR FORMAT ---
 
-# Fungsi Membuat XML Blogger Valid
-def generate_xml(items):
-    now = datetime.now().isoformat() + "Z"
+def generate_blogger_xml(items):
     entries = ""
     for item in items:
-        post_id = int(datetime.now().timestamp() * 1000)
+        now = datetime.now().isoformat() + "Z"
         entries += f"""
     <entry>
         <category scheme="http://www.blogger.com/atom/ns#" term="AGC-DenAbi"/>
         <title type='text'>{item['title']}</title>
-        <content type='html'>{item['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}</content>
+        <content type='html'>{item['content'].replace('&', '&amp;').replace('<', '&lt;').replace(/>/g, '&gt;')}</content>
         <published>{now}</published>
+        <control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control>
         <author><name>Den Abi</name></author>
     </entry>"""
+    return f"<?xml version='1.0' encoding='UTF-8'?><feed xmlns='http://www.w3.org/2005/Atom' xmlns:blogger='http://schemas.google.com/blogger/2008'>{entries}</feed>"
+
+def generate_wordpress_xml(items):
+    items_xml = ""
+    for item in items:
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        items_xml += f"""
+        <item>
+            <title>{item['title']}</title>
+            <pubDate>{now}</pubDate>
+            <dc:creator>Den Abi</dc:creator>
+            <description></description>
+            <content:encoded><![CDATA[{item['content']}]]></content:encoded>
+            <wp:status>publish</wp:status>
+            <wp:post_type>post</wp:post_type>
+        </item>"""
     
-    xml_full = f"""<?xml version='1.0' encoding='UTF-8'?>
-<feed xmlns='http://www.w3.org/2005/Atom' xmlns:blogger='http://schemas.google.com/blogger/2008'>
-    <title type='text'>Den Abi Export</title>
-    <updated>{now}</updated>
-    <generator version='7.00' uri='http://www.blogger.com'>Blogger</generator>
-    {entries}
-</feed>"""
-    return xml_full
+    return f"""<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0" xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:wfw="http://wellformedweb.org/CommentAPI/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:wp="http://wordpress.org/export/1.2/">
+    <channel>
+        <wp:wxr_version>1.2</wp:wxr_version>
+        {items_xml}
+    </channel>
+</rss>"""
 
-# Inisialisasi Antrean di Session State
-if 'antrean' not in st.session_state:
-    st.session_state.antrean = []
+# --- TOMBOL AKSI ---
 
-# Tombol Aksi
-if st.button("MULAI GRAB KONTEN"):
+if st.button("🚀 MULAI GENERATE MASSAL"):
     if target_url:
-        with st.spinner('Server sedang memproses...'):
-            t, c = perform_grab(target_url, platform, mode)
-            if t and c:
-                st.session_state.antrean.append({'title': t, 'content': c})
-                st.success(f"Berhasil menambahkan: {t}")
-    else:
-        st.warning("Masukkan URL terlebih dahulu!")
+        st.session_state.antrean = [] # Reset antrean baru
+        with st.spinner('Mencari postingan...'):
+            links = get_bulk_links(target_url)
+            if links:
+                progress_bar = st.progress(0)
+                for i, link in enumerate(links):
+                    t, c = grab_full_data(link)
+                    if t and c:
+                        st.session_state.antrean.append({'title': t, 'content': c})
+                    progress_bar.progress((i + 1) / len(links))
+                st.success(f"Berhasil mengumpulkan {len(st.session_state.antrean)} postingan!")
+            else:
+                st.error("Link tidak valid atau Feed tidak ditemukan.")
 
-# Tampilan Antrean & Download
-st.write("---")
-st.subheader(f"📊 Antrean XML: {len(st.session_state.antrean)} Item")
+# --- DOWNLOAD AREA ---
 
-if len(st.session_state.antrean) > 0:
-    col_dl, col_rs = st.columns(2)
-    with col_dl:
-        xml_output = generate_xml(st.session_state.antrean)
-        b64 = base64.b64encode(xml_output.encode()).decode()
-        href = f'<a href="data:file/xml;base64,{b64}" download="DenAbi_AGC_{datetime.now().strftime("%d%m%y")}.xml"><button style="width:100%; padding:10px; background-color:#fbc02d; color:black; border:none; border-radius:8px; cursor:pointer; font-weight:bold;">DOWNLOAD FILE .XML</button></a>'
-        st.markdown(href, unsafe_allow_html=True)
+if st.session_state.antrean:
+    st.write("---")
+    st.subheader(f"📦 Siap Download: {len(st.session_state.antrean)} Postingan")
     
-    with col_rs:
-        if st.button("RESET DAFTAR"):
-            st.session_state.antrean = []
-            st.rerun()
+    if output_format == "Blogger (Atom)":
+        final_xml = generate_blogger_xml(st.session_state.antrean)
+        file_name = "Blogger_Import_DenAbi.xml"
+    else:
+        final_xml = generate_wordpress_xml(st.session_state.antrean)
+        file_name = "WordPress_Import_DenAbi.xml"
+        
+    b64 = base64.b64encode(final_xml.encode()).decode()
+    st.markdown(f'<a href="data:file/xml;base64,{b64}" download="{file_name}"><button style="width:100%; background:#fbc02d; padding:15px; border-radius:10px; font-weight:bold; border:none; cursor:pointer;">📥 DOWNLOAD XML UNTUK {output_format.upper()}</button></a>', unsafe_allow_html=True)
 
-st.caption("Developed by Den Abi Project © 2026")
+st.caption("Den Abi Multi-Generator V7")

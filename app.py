@@ -70,11 +70,13 @@ def generate_blogger_xml(items):
     entries = ""
     for item in items:
         now = datetime.now().isoformat() + "Z"
+        # Kita pisahkan proses pembersihan teks agar tidak error di f-string
+        clean_content = item['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         entries += f"""
     <entry>
         <category scheme="http://www.blogger.com/atom/ns#" term="AGC-DenAbi"/>
         <title type='text'>{item['title']}</title>
-        <content type='html'>{item['content'].replace('&', '&amp;').replace('<', '&lt;').replace(/>/g, '&gt;')}</content>
+        <content type='html'>{clean_content}</content>
         <published>{now}</published>
         <control xmlns='http://www.w3.org/2007/app'><draft xmlns='http://purl.org/atom/app#'>no</draft></control>
         <author><name>Den Abi</name></author>
@@ -95,6 +97,14 @@ def generate_wordpress_xml(items):
             <wp:status>publish</wp:status>
             <wp:post_type>post</wp:post_type>
         </item>"""
+    
+    return f"""<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0" xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:wfw="http://wellformedweb.org/CommentAPI/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:wp="http://wordpress.org/export/1.2/">
+    <channel>
+        <wp:wxr_version>1.2</wp:wxr_version>
+        {items_xml}
+    </channel>
+</rss>"""
     
     return f"""<?xml version="1.0" encoding="UTF-8" ?>
 <rss version="2.0" xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:wfw="http://wellformedweb.org/CommentAPI/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:wp="http://wordpress.org/export/1.2/">
@@ -139,3 +149,4 @@ if st.session_state.antrean:
     st.markdown(f'<a href="data:file/xml;base64,{b64}" download="{file_name}"><button style="width:100%; background:#fbc02d; padding:15px; border-radius:10px; font-weight:bold; border:none; cursor:pointer;">📥 DOWNLOAD XML UNTUK {output_format.upper()}</button></a>', unsafe_allow_html=True)
 
 st.caption("Den Abi Multi-Generator V7")
+

@@ -1,91 +1,57 @@
 import streamlit as st
 import time
 import random
-import requests
+import pandas as pd
 
-# 1. DATABASE 100 USER-AGENT TERBARU
-USER_AGENTS = [
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 12; Redmi Note 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.6045.163 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/121.0.6167.138 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-    "Mozilla/5.0 (Linux; Android 13; CPH2357) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPad; CPU OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-    # Catatan: Masukkan sisa dari 100 UA yang saya berikan kemarin di sini
-]
+# 1. SETUP UI PREMIUM
+st.set_page_config(page_title="Adsterra Gotong Royong - Den Abi", page_icon="💰")
 
-# 2. DATABASE ASAL TRAFIK (REFERER)
-REFERERS = [
-    "https://www.google.com/",
-    "https://www.facebook.com/",
-    "https://t.co/", 
-    "https://www.tiktok.com/",
-    "https://duckduckgo.com/",
-    "https://www.bing.com/",
-    "https://l.instagram.com/"
-]
+st.markdown("""
+    <style>
+    .stApp { background-color: #050505; color: #ffffff; }
+    .status-box { background: #111; border: 2px solid #ee1d52; padding: 20px; border-radius: 10px; text-align: center; }
+    .btn-click { background: #2ecc71 !important; color: white !important; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
 
-st.set_page_config(page_title="Den Abi High Retention V14", page_icon="🚀")
+# 2. DATABASE LINK (Simulasi Google Sheets)
+# Untuk 1000+ user, hubungkan ke gspread atau database permanen.
+if 'db_links' not in st.session_state:
+    st.session_state.db_links = ["https://fazagafi21.blogspot.com/", "https://prostream.my.id/"]
 
-st.title("🚀 EXPERIMEN HIGH RETENTION V14")
-st.markdown("---")
+st.title("💰 ADSTERRA IMPRESS EXCHANGE")
+st.write("Sistem Gotong Royong Den Abi - Saling Kunjung & Saling Klik")
 
-# 3. KONFIGURASI TARGET
-target_url = st.text_input("Link Target (TikTok/Web/Blog):", placeholder="https://...")
-target_count = st.number_input("Jumlah View (Saran: 10 per sesi):", 1, 100, 10)
+# 3. FITUR UTAMA: TUGAS ACAK
+st.markdown('<div class="status-box">', unsafe_allow_html=True)
+target = random.choice(st.session_state.db_links)
+st.subheader("🎯 Target Kunjungan")
+st.code(target)
 
-st.sidebar.header("⚙️ Pengaturan Panel")
-# Durasi menonton dalam detik
-min_watch = st.sidebar.slider("Durasi Nonton Minimal (detik):", 15, 60, 25)
-max_watch = st.sidebar.slider("Durasi Nonton Maksimal (detik):", 61, 120, 80)
-
-# 4. LOGIKA EKSEKUSI
-if st.button("🔥 MULAI INJECT VIEW"):
-    if target_url:
-        st.info("Memulai proses simulasi. Harap bersabar karena ini menggunakan High Retention.")
+if st.button("🚀 BUKA & MULAI TUGAS"):
+    st.write(f'<script>window.open("{target}", "_blank");</script>', unsafe_allow_html=True)
+    
+    t_box = st.empty()
+    mission_box = st.empty()
+    
+    for t in range(60, 0, -1):
+        t_box.markdown(f"### ⏳ Menunggu Impress: {t} Detik")
         
-        progress = st.progress(0)
-        status_box = st.empty()
-        berhasil = 0
+        # FITUR INSTRUKSI KLIK (Max 3x)
+        if t == 45: mission_box.warning("👉 MISI 1: Cari iklan Adsterra di atas, lalu KLIK 1x!")
+        if t == 30: mission_box.warning("👉 MISI 2: Scroll ke bawah, cari iklan lain dan KLIK 1x!")
+        if t == 15: mission_box.warning("👉 MISI 3: Terakhir, KLIK tombol download/iklan di bawah!")
         
-        for i in range(target_count):
-            try:
-                # 1. Pilih identitas acak
-                headers = {
-                    'User-Agent': random.choice(USER_AGENTS),
-                    'Referer': random.choice(REFERERS),
-                    'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Connection': 'keep-alive'
-                }
-                
-                # 2. Kirim permintaan kunjungan
-                response = requests.get(target_url, headers=headers, timeout=15)
-                
-                # 3. Simulasi durasi menonton yang lama (High Retention)
-                durasi = random.uniform(min_watch, max_watch)
-                status_box.write(f"⏳ Sedang mensimulasikan penonton ke-{i+1} (Durasi: {durasi:.1f} detik)...")
-                
-                time.sleep(durasi) # Menahan bot di halaman agar view tidak hangus
-                
-                if response.status_code == 200:
-                    berhasil += 1
-                
-                # 4. Update progress
-                persen = int((i + 1) / target_count * 100)
-                progress.progress(persen)
-                
-            except Exception as e:
-                st.error(f"Error pada view ke-{i+1}: {e}")
-                
-        st.success(f"✅ Selesai! {berhasil} view dikirim dengan metode High Retention.")
-        st.balloons()
-    else:
-        st.error("Silakan isi link target terlebih dahulu!")
+        time.sleep(1)
+    
+    st.success("✅ TUGAS SELESAI! Kamu mendapatkan 30 Poin (Impress + 3 Klik)")
+st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown("---")
-st.caption("Den Abi Digital Store © 2026 | High Retention Simulation V14")
+# 4. FORM DAFTAR LINK (ANTREAN 1000+ USER)
+st.write("---")
+with st.expander("➕ Daftarkan Blog Kamu ke Jaringan 1000+ User"):
+    new_url = st.text_input("Link Blog Adsterra:")
+    if st.button("Daftarkan Sekarang"):
+        if new_url:
+            st.session_state.db_links.append(new_url)
+            st.success("Link kamu sudah masuk antrean acak dunia!")
